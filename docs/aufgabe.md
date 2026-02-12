@@ -154,9 +154,22 @@ Ergebnis des Brainstormings vom 12.02.2026:
 | **Sensor-Kalibrierung** | Nur Rohdaten (int16) | YAGNI, keine Kalibriertabellen vom Hersteller vorhanden |
 | **SSI-Interface** | Nicht implementieren | Nur CAN wird genutzt, SSI ist nicht benoetigt |
 
+Ergebnis des Pre-Implementation-Reviews vom 12.02.2026:
+
+| Entscheidung | Ergebnis | Begruendung |
+|---|---|---|
+| **Stale-Data-Logik** | Counter-Timeout (5 ms / 20 ms) | Einfaches 0/1-pro-Tick wuerde bei 500 Hz Torque permanent flackern |
+| **Tare Thread-Safety** | Framework-Service-Queue | Muss im Upstream recherchiert werden; vermeidet Data Race auf CAN-Socket |
+| **Lieferumfang** | Nur Spec-Minimum | src/, Build-Dateien, LICENSE. Keine Tests, kein Packaging, kein CI |
+| **Plattform** | x86_64-only | `double` in packed Struct ist OK, keine ARM-Portabilitaet noetig |
+| **Fehler waehrend OP** | ERROR-State nach 100 Fehlern | 100 consecutive read()-Fehler (nicht EAGAIN) → ERROR-State. Bei 1 kHz = 100 ms Toleranz |
+| **CAN-Filter** | Breiter Filter (Maske 0x1FFFFF00) | Matcht 256 IDs statt 13, unbekannte werden in Software verworfen. Nur 2 Kernel-Filter noetig |
+
 ### Details zu den Entscheidungen
 
 **Tare als Service**: Das Modul registriert einen robotkernel-Service, der von externen Bridges (REST, CLI, Links-and-Nodes) aufgerufen werden kann. Der Service sendet den Tare-Frame (`0x89`) ueber den CAN-Socket. Kein Input-Process-Data noetig.
+
+**Tare Thread-Safety**: `tick()` laeuft im RT-Thread, der Tare-Service wird von einem Bridge-Thread aufgerufen. Beide nutzen denselben CAN-Socket. Loesung: Framework-Service-Queue nutzen (muss im Upstream-Code recherchiert werden). Fallback: `std::atomic<bool> tare_pending_` Flag (Service setzt true, tick() sendet und setzt zurueck).
 
 **Unit-Tests**: CAN-Frame-Parsing wird mit hart codierten Byte-Arrays getestet. SocketCAN-Syscalls werden gemockt. Testfaelle:
 - Torque-Frame Dekodierung (positiv, negativ, Grenzwerte)
@@ -164,8 +177,16 @@ Ergebnis des Brainstormings vom 12.02.2026:
 - Kalibrierung Rohwert → Nm
 - Ungueltige Frames (falsches DLC, unbekannte CAN-ID)
 - Stale-Data-Erkennung
+HINWEIS: Tests sind NICHT im Lieferumfang V1 enthalten (Entscheidung: Nur Spec-Minimum).
 
-**ERROR-State**: Wenn `socket()`, `ioctl()` oder `bind()` in `set_state_init_2_preop()` fehlschlagen (z. B. vcan0 existiert nicht), geht das Modul in den ERROR-State. Das Framework entscheidet ueber Retry oder Abbruch.
+**ERROR-State**: Zwei Ausloeser:
+1. **Init-Fehler**: `socket()`, `ioctl()` oder `bind()` in `set_state_init_2_preop()` fehlschlagen (z. B. vcan0 existiert nicht) → sofort ERROR-State.
+2. **Runtime-Fehler**: 100 aufeinanderfolgende `read()`-Fehler (nicht EAGAIN) in `tick()` → ERROR-State. Zaehler wird bei jedem erfolgreichen Read zurueckgesetzt.
+
+**Stale-Data-Erkennung**: Counter-basiert, nicht einfaches 0/1 pro Tick.
+- `torque_stale_counter_`: Wird in jedem tick() inkrementiert, bei Torque-Frame-Empfang auf 0 gesetzt. `torque_valid = (counter < 5)` → 5 ms Timeout bei 1 kHz.
+- `sensor_stale_counter_[13]`: Pro Sensor, gleiche Logik. `sensors_valid_mask Bit N = (counter[N] < 20)` → 20 ms Timeout.
+- Schwellwerte: 5 Ticks (Torque, ~2.5x Periode bei 500 Hz), 20 Ticks (Sensoren, 2x Periode bei 100 Hz).
 
 ## Referenzen
 

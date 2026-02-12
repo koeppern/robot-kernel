@@ -356,8 +356,21 @@ private:
     int sensor_count_;
 
     // Runtime
-    int can_socket_;
+    int can_socket_ = -1;
     torque_sensor_output_pd pd_data_;
+
+    // Error tracking
+    uint32_t consecutive_errors_ = 0;          // Reset bei erfolgreichem read()
+    static constexpr uint32_t MAX_CONSECUTIVE_ERRORS = 100;  // → ERROR-State
+
+    // Stale-data counters (init: stale)
+    uint32_t torque_stale_counter_ = UINT32_MAX;
+    uint32_t sensor_stale_counter_[13];
+    static constexpr uint32_t TORQUE_STALE_THRESHOLD = 5;    // 5 ms bei 1 kHz
+    static constexpr uint32_t SENSOR_STALE_THRESHOLD = 20;   // 20 ms bei 1 kHz
+
+    // Tare thread-safety (Fallback, bis Framework-Service-Queue recherchiert)
+    std::atomic<bool> tare_pending_{false};
 
     // Process data devices
     std::shared_ptr<robotkernel::process_data> output_pd_;
@@ -366,7 +379,6 @@ private:
     // Helpers
     void open_can_socket();
     void close_can_socket();
-    void drain_can_frames();   // Liest alle verfuegbaren Frames in einem tick()
     void parse_torque_frame(const struct can_frame& frame);
     void parse_sensor_frame(const struct can_frame& frame, int sensor_idx);
 };
@@ -394,9 +406,11 @@ preop_2_init:    CAN-Socket schliessen
 
 ```cpp
 void torque_sensor::tick() {
-    // Alle verfuegbaren CAN-Frames lesen (non-blocking)
+    // 1. Alle verfuegbaren CAN-Frames lesen (non-blocking)
     struct can_frame frame;
-    while (::read(can_socket_, &frame, sizeof(frame)) == sizeof(frame)) {
+    ssize_t nbytes;
+    while ((nbytes = ::read(can_socket_, &frame, sizeof(frame))) == sizeof(frame)) {
+        consecutive_errors_ = 0;  // Reset bei erfolgreichem Read
         uint32_t id = frame.can_id & CAN_EFF_MASK;  // 29-bit ID ohne Flags
 
         if (id == torque_can_id_ && frame.can_dlc == 8) {
@@ -408,13 +422,50 @@ void torque_sensor::tick() {
             parse_sensor_frame(frame, id - sensor_base_can_id_);
         }
     }
-    // errno == EAGAIN ist normal (keine weiteren Frames)
 
-    // Process Data aktualisieren
+    // 2. Error-Handling: EAGAIN ist normal, andere Fehler zaehlen
+    if (nbytes < 0 && errno != EAGAIN) {
+        pd_data_.error_count++;
+        consecutive_errors_++;
+        if (consecutive_errors_ >= 100) {
+            // → ERROR-State ausloesen (Framework-Mechanismus)
+        }
+    }
+
+    // 3. Tare-Command senden (aus Service-Queue oder atomic Flag)
+    if (tare_pending_.exchange(false)) {
+        struct can_frame tare_frame;
+        tare_frame.can_id = torque_can_id_ | CAN_EFF_FLAG;
+        tare_frame.can_dlc = 8;
+        memset(tare_frame.data, 0, 8);
+        tare_frame.data[0] = 0x89;
+        ::write(can_socket_, &tare_frame, sizeof(tare_frame));
+    }
+
+    // 4. Stale-Data-Counter aktualisieren
+    torque_stale_counter_++;
+    pd_data_.torque_valid = (torque_stale_counter_ < 5) ? 1 : 0;
+    for (int i = 0; i < sensor_count_; i++) {
+        sensor_stale_counter_[i]++;
+        if (sensor_stale_counter_[i] < 20)
+            pd_data_.sensors_valid_mask |= (1 << i);
+        else
+            pd_data_.sensors_valid_mask &= ~(1 << i);
+    }
+
+    // 5. Process Data aktualisieren
     auto pd_ptr = output_pd_->next(output_pd_provider_);
     memcpy(pd_ptr, &pd_data_, sizeof(pd_data_));
     output_pd_->push(output_pd_provider_);
 }
+```
+
+**Private Members fuer Error/Stale/Tare:**
+```cpp
+uint32_t consecutive_errors_ = 0;        // Reset bei erfolgreichem read()
+uint32_t torque_stale_counter_ = UINT32_MAX;  // Startwert: stale
+uint32_t sensor_stale_counter_[13];      // Init: alle UINT32_MAX (stale)
+std::atomic<bool> tare_pending_{false};  // Fallback fuer Thread-Safety
 ```
 
 ### YAML-Konfiguration (komplett)
@@ -560,13 +611,38 @@ robotkernel::add_device(output_pd_);
 - Bei 1 kHz Tick-Rate: ~0-1 Torque-Frames und ~0-2 Sensor-Frames pro Tick
 - `memcpy` fuer PD-Update ist deterministisch (feste Groesse)
 
-### Stale-Data-Erkennung
+### Stale-Data-Erkennung (entschieden: Counter-Timeout)
 
-Optional: Zaehler pro Channel der in jedem tick() inkrementiert wird. Wenn nach N Ticks kein neuer Frame kam → `torque_valid = 0`. Einfachster Ansatz: In jedem tick() `torque_valid = 0` setzen, beim Frame-Empfang `torque_valid = 1`.
+Counter-basiert, NICHT einfaches 0/1 pro Tick (wuerde bei 500 Hz Torque permanent flackern).
+
+```cpp
+// Private Members:
+uint32_t torque_stale_counter_;      // Inkrementiert pro tick(), Reset bei Frame-Empfang
+uint32_t sensor_stale_counter_[13];  // Pro Sensor, gleiche Logik
+
+// In tick(), NACH drain_can_frames():
+torque_stale_counter_++;
+pd_data_.torque_valid = (torque_stale_counter_ < 5) ? 1 : 0;   // 5 ms Timeout
+
+for (int i = 0; i < 13; i++) {
+    sensor_stale_counter_[i]++;
+    if (sensor_stale_counter_[i] < 20)                           // 20 ms Timeout
+        pd_data_.sensors_valid_mask |= (1 << i);
+    else
+        pd_data_.sensors_valid_mask &= ~(1 << i);
+}
+
+// In parse_torque_frame():  torque_stale_counter_ = 0;
+// In parse_sensor_frame():  sensor_stale_counter_[idx] = 0;
+```
+
+Schwellwerte: 5 Ticks (Torque, ~2.5x Periode bei 500 Hz), 20 Ticks (Sensoren, 2x Periode bei 100 Hz).
 
 ### Design-Entscheidungen (entschieden 12.02.2026)
 
 Details und Begruendungen: siehe [`docs/aufgabe.md`](docs/aufgabe.md#design-entscheidungen)
+
+**Brainstorming-Runde 1:**
 
 | Entscheidung | Ergebnis |
 |---|---|
@@ -576,6 +652,17 @@ Details und Begruendungen: siehe [`docs/aufgabe.md`](docs/aufgabe.md#design-ents
 | Error-Handling | ERROR-State bei Socket-Fehler |
 | Sensor-Kalibrierung | Nur Rohdaten (int16), kein YAGNI |
 | SSI-Interface | Nicht implementieren |
+
+**Pre-Implementation-Review (gleicher Tag):**
+
+| Entscheidung | Ergebnis |
+|---|---|
+| Stale-Data-Logik | Counter-Timeout: 5 ms Torque, 20 ms Sensoren |
+| Tare Thread-Safety | Framework-Service-Queue (Upstream recherchieren, Fallback: atomic Flag) |
+| Lieferumfang | Nur Spec-Minimum (keine Tests, kein Packaging, kein CI) |
+| Plattform | x86_64-only (double in packed Struct OK) |
+| Runtime-Fehler | ERROR-State nach 100 consecutive read()-Fehlern (100 ms Toleranz) |
+| CAN-Filter | Breiter Filter (Maske 0x1FFFFF00), Software-Filterung fuer unbekannte IDs |
 
 ## Reference Files
 
