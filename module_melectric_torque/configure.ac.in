@@ -1,0 +1,19 @@
+AC_INIT([module_melectric_torque], [PACKAGE_VERSION])
+AC_CONFIG_SRCDIR([src/melectric_torque.cpp])
+AC_CONFIG_MACRO_DIRS([m4])
+AM_INIT_AUTOMAKE([foreign subdir-objects])
+
+LT_INIT([dlopen])
+
+AC_PROG_CXX
+AX_CXX_COMPILE_STDCXX(14, noext, mandatory)
+
+PKG_CHECK_MODULES([ROBOTKERNEL], [robotkernel])
+
+AC_CONFIG_FILES([
+    Makefile
+    src/Makefile
+    module_melectric_torque.pc
+])
+
+AC_OUTPUT
