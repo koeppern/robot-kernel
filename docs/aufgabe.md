@@ -17,13 +17,14 @@ Entwicklung eines neuen robotkernel-hal-Moduls **`module_melectric_torque`**, da
 
 ```
 Drehmomentsensor (CAN-Bus)
-    → Beckhoff EK1100 (EtherCAT Bus Coupler)
-        → Beckhoff EL6751 (EtherCAT-to-CAN Gateway)
-            → Linux vCAN Interface (vcan0)
-                → DIESES MODUL (CAN-Frame-Parsing, Datenextraktion)
+    → Beckhoff EL6751 (EtherCAT-to-CAN Gateway)
+        → Beckhoff EK1100 (EtherCAT Bus Coupler)
+            → module_el6751 (Software-Treiber)
+                → Linux vCAN Interface (vcan0)
+                    → DIESES MODUL (CAN-Frame-Parsing, Datenextraktion)
 ```
 
-Der EL6751 wird durch das bestehende `module_el6751` angesteuert und stellt optional ein vCAN-Interface bereit, ueber das Standard-Linux-Tools und unser Modul direkt CAN-Frames lesen und schreiben koennen.
+Der physische EL6751 wird durch das bestehende Software-Modul `module_el6751` angesteuert, das die CAN-Frames zwischen EtherCAT-PDOs und einem Linux-vCAN-Device bridged. Unser Modul liest direkt vom vCAN-Interface.
 
 ## Sensor-Protokoll
 
