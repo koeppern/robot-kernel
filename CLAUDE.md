@@ -150,6 +150,22 @@ el6751 (EtherCAT PDOs) → vcan_stream.write() → Linux vCAN Device ← unser M
 
 Vorteil: Kein Code-Level-Dependency auf module_el6751. Nur Deployment-Dependency (el6751 muss vorher laufen und das vCAN-Device erstellen).
 
+### Voraussetzung: vCAN-Device muss VOR dem Start existieren
+
+Der el6751 erstellt das vCAN-Device NICHT selbst. Es muss vorher manuell oder per Systemd-Service angelegt werden:
+
+```bash
+sudo ip link add dev vcan0 type vcan
+sudo ip link set up vcan0
+```
+
+Debugging-Tools (funktionieren direkt auf dem vCAN):
+```bash
+candump vcan0                          # Alle Frames mitlesen
+cansend vcan0 18FA8032#8900000000000000  # Tare-Command senden
+cangen vcan0                           # Test-Frames generieren
+```
+
 ### Wie module_el6751 das vCAN bereitstellt (aus Quellcode-Analyse)
 
 YAML-Config des el6751 mit vCAN:
@@ -161,8 +177,13 @@ YAML-Config des el6751 mit vCAN:
     pd_outputs_device: ecat.slave_2.outputs.pd
     vcan_name: vcan0                              # <-- aktiviert vCAN
     extended_mode: true                           # Default: true (29-bit CAN IDs)
+    with_padding: true                            # Default: true (2-Byte Padding pro PDO-Frame)
+    tx_buf_cnt: 10                                # Default: 10 (max TX Buffer)
+    rx_buf_cnt: 10                                # Default: 10 (max RX Buffer)
     slave_streams: []                             # Kann leer sein wenn nur vCAN genutzt wird
 ```
+
+HINWEIS: `vcan_name`, `extended_mode`, `with_padding`, `tx_buf_cnt`, `rx_buf_cnt` sind im README NICHT dokumentiert, nur im Quellcode.
 
 Der el6751 erstellt in `set_state_init_2_preop()` eine `vcan_stream`-Instanz, die intern ein `socket(PF_CAN, SOCK_RAW, CAN_RAW)` oeffnet, an das vCAN-Interface bindet, und CAN-Frames bidirektional zwischen EtherCAT-PDOs und dem Linux-vCAN-Device bridged.
 
