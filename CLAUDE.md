@@ -6,6 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 New robotkernel-hal module for integrating a **MELECTRIC torque sensor prototype** (Serial S001) into the DLR (Deutsches Zentrum fuer Luft- und Raumfahrt) robotics HAL framework. The sensor communicates via CAN bus; raw CAN frames are received through the Beckhoff EL6751 module's **vCAN adapter option** and parsed in this module.
 
+## Ausgelagerte Dokumentation
+
+| Dokument | Inhalt | Trigger |
+|---|---|---|
+| [`docs/aufgabe.md`](docs/aufgabe.md) | Aufgabenstellung, Anforderungen, Lieferumfang, offene Entscheidungen | Bei Fragen zu Scope, Anforderungen oder Projektkontext |
+
 ## Hardware Signal Chain
 
 ```
@@ -558,11 +564,18 @@ robotkernel::add_device(output_pd_);
 
 Optional: Zaehler pro Channel der in jedem tick() inkrementiert wird. Wenn nach N Ticks kein neuer Frame kam → `torque_valid = 0`. Einfachster Ansatz: In jedem tick() `torque_valid = 0` setzen, beim Frame-Empfang `torque_valid = 1`.
 
-### Offene Design-Entscheidungen
+### Design-Entscheidungen (entschieden 12.02.2026)
 
-1. **Tare-Command**: Als robotkernel-Service (YAML-Definition + Service Provider) oder als Flag im Input-Process-Data? Service ist sauberer, Flag ist einfacher.
-2. **SSI-Interface**: Das Datenblatt beschreibt auch SSI (15-bit Torque + 16-bit CRC). Aktuell nicht benoetigt da CAN genutzt wird, aber CRC-Validierung koennte als optionale Plausibilitaetspruefung implementiert werden.
-3. **Sensor-Rohdaten vs. kalibrierte Werte**: Aktuell werden Sensor-X/Y/Z als Rohdaten (int16) exponiert. Ggf. spaeter Kalibriertabelle pro Sensor hinzufuegen.
+Details und Begruendungen: siehe [`docs/aufgabe.md`](docs/aufgabe.md#design-entscheidungen)
+
+| Entscheidung | Ergebnis |
+|---|---|
+| Scope V1 | Komplett in einem Zug |
+| Tare-Command | robotkernel-Service (kein PD-Flag) |
+| Testing | Unit-Tests mit gemockten CAN-Frames |
+| Error-Handling | ERROR-State bei Socket-Fehler |
+| Sensor-Kalibrierung | Nur Rohdaten (int16), kein YAGNI |
+| SSI-Interface | Nicht implementieren |
 
 ## Reference Files
 
