@@ -15,7 +15,9 @@ New robotkernel-hal module for integrating a **MELECTRIC torque sensor prototype
 ## Hardware Signal Chain
 
 ```
-Torque Sensor (CAN) → Beckhoff EK1100 (EtherCAT Coupler) → Beckhoff EL6751 (EtherCAT-to-CAN)
+Torque Sensor (CAN) → Beckhoff EL6751 (EtherCAT-to-CAN) → Beckhoff EK1100 (EtherCAT Coupler)
+                                                                      ↓
+                                                              module_el6751 (Software-Treiber)
                                                                       ↓
                                                               vCAN Interface (Linux)
                                                                       ↓
@@ -23,7 +25,7 @@ Torque Sensor (CAN) → Beckhoff EK1100 (EtherCAT Coupler) → Beckhoff EL6751 (
                                                            torque/sensor data extraction)
 ```
 
-The EL6751 module (`module_el6751`) provides a Linux vCAN interface option. This module reads raw CAN frames from that vCAN interface and decodes the sensor protocol.
+The physical EL6751 is driven by `module_el6751`, which bridges CAN frames between EtherCAT PDOs and a Linux vCAN device. This module reads raw CAN frames directly from that vCAN interface.
 
 ## Sensor Protocol (from prototype_doc.pdf)
 
